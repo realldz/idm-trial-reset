@@ -89,6 +89,40 @@ foreach ($d in @($idmDir,$dmCache,$pdDir)) {
   Write-Host ("deleted {0}: {1}" -f $d, (-not (Test-Path $d)))
 }
 
+# 2b) scan + delete IDM CLSID keys (IAS-style pattern)
+$clsDeleted = 0
+$clsidRoot = 'HKCU:\Software\Classes\Wow6432Node\CLSID'
+if ($env:PROCESSOR_ARCHITECTURE -eq 'x86') { $clsidRoot = 'HKCU:\Software\Classes\CLSID' }
+if (Test-Path $clsidRoot) {
+  $skipSubs = @('LocalServer32','InProcServer32','InProcHandler32')
+  $matchVals = @('MData','Model','scansk','Therad')
+  foreach ($key in Get-ChildItem -LiteralPath $clsidRoot -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -match '^\{[A-Fa-f0-9]{8}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{4}-[A-Fa-f0-9]{12}\}$' }) {
+    $delete = $false
+    $subs = @($key.GetSubKeyNames())
+    if ($subs | Where-Object { $skipSubs -contains $_ }) { continue }
+    $vals = @($key.GetValueNames())
+    if ($subs.Count -eq 0 -and $vals.Count -eq 0) { $delete = $true }
+    elseif (-not $delete) {
+      $default = $key.GetValue('')
+      if ($default -match '^\d+$' -and $subs.Count -eq 0) { $delete = $true }
+      elseif ($default -match '[+=]' -and $subs.Count -eq 0) { $delete = $true }
+      elseif ($vals | Where-Object { $matchVals -contains $_ }) { $delete = $true }
+      elseif ($subs.Count -eq 1 -and $subs -contains 'Version') {
+        try { $ver = (Get-ItemProperty -LiteralPath "$($key.PSPath)\Version" -ErrorAction SilentlyContinue).'(default)' | Select-Object -First 1; if ($ver -match '^\d+$') { $delete = $true } } catch {}
+      }
+    }
+    if ($delete) {
+      try { Remove-Item -LiteralPath $key.PSPath -Recurse -Force -ErrorAction Stop; Write-Host "Deleted CLSID: $($key.PSChildName)"; $clsDeleted++ }
+      catch {
+        & reg delete "HKCU\$($key.PSChildName.Replace('HKCU:\',''))" /f 2>$null | Out-Null
+        if (-not (Test-Path $key.PSPath)) { Write-Host "Deleted CLSID (reg): $($key.PSChildName)"; $clsDeleted++ }
+        else { Write-Host "Failed CLSID: $($key.PSChildName)" }
+      }
+    }
+  }
+}
+Write-Host "CLSID scan: deleted $clsDeleted keys."
+
 # 3) delete registry. Try plain delete first; ConfigTime DENY needs the SYSTEM helper.
 & reg delete "HKCU\Software\DownloadManager" /f 2>$null | Out-Null
 & reg delete "HKCU\Software\Backup_IDM" /f 2>$null | Out-Null

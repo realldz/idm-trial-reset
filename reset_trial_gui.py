@@ -44,9 +44,11 @@ class ResetGUI:
         ttk.Label(
             info, justify="left", wraplength=680,
             text=("Kills IDM, deletes the on-disk anchors (%AppData%\\IDM, "
-                  "%AppData%\\DMCache, %ProgramData%\\IDM) and the registry stores "
-                  "(HKCU\\Software\\DownloadManager + Backup_IDM). IDM then treats "
-                  "this machine as a new install and grants a fresh 30-day trial."),
+                  "%AppData%\\DMCache, %ProgramData%\\IDM), scans + deletes IDM "
+                  "CLSID keys, wipes the registry stores (HKCU\\Software\\"
+                  "DownloadManager + Backup_IDM), then restores download list + "
+                  "settings if 'Keep' is checked. IDM treats this machine as a "
+                  "new install and grants a fresh 30-day trial."),
         ).pack(anchor="w")
 
         opt = ttk.LabelFrame(self.root, text="Options", padding=8)
