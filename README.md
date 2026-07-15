@@ -58,13 +58,16 @@ powershell -ExecutionPolicy Bypass -File reset_trial.ps1 -Keep -Launch
    - `%AppData%\IDM`
    - `%AppData%\DMCache`
    - `%ProgramData%\IDM`
-3. Deletes `HKCU\Software\DownloadManager` (whole tree) and `HKCU\Software\Backup_IDM`.
+3. Scans `HKCU\Software\Classes\Wow6432Node\CLSID` for IDM-related CLSID keys
+   (IAS-style pattern: GUIDs with digit-default, MData/Model/scansk/Therad values,
+   empty keys, or digit-in-Version) and deletes them.
+4. Deletes `HKCU\Software\DownloadManager` (whole tree) and `HKCU\Software\Backup_IDM`.
    The `ConfigTime` subkey carries a DENY ACE, so a **SYSTEM** helper (scheduled
    task) resets the DACL before `RegDeleteTree`.
-4. With `--keep`, restores the download list + settings from the backup, stripped
+5. With `--keep`, restores the download list + settings from the backup, stripped
    of the trial anchor values (`tvfrdt`, `radxcnt`, `LstCheck`, `LastCheckQU`,
    `ConfigTime`), and copies back `DwnlData` / `Grabber` / `Scheduler` / `*.dat`.
-5. With `--launch`, relaunches IDM.
+6. With `--launch`, relaunches IDM.
 
 ## Warning: never future-date the anchors
 

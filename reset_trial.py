@@ -29,16 +29,28 @@ Usage:
 import argparse
 import ctypes
 import os
+import re
 import shutil
 import subprocess
 import sys
 import time
+import winreg
 from datetime import datetime
 from pathlib import Path
 
 IDM_PROCS = ("IDMan", "IDMGrHlp", "IEMonitor", "IDMIETCC", "IDMBroker", "IDMMsgHost")
 DROP_VALS = ("tvfrdt", "radxcnt", "lstcheck", "lastcheckqu")  # lower-case
 RESTORE_SUBDIRS = ("DwnlData", "Grabber", "Scheduler")
+
+# ── CLSID freeze constants ───────────────────────────────────────────
+
+CLSID_ROOT = r"Software\Classes\Wow6432Node\CLSID"
+GUID_RE = re.compile(
+    r"^\{[A-F0-9]{8}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{4}-[A-F0-9]{12}\}$",
+    re.IGNORECASE,
+)
+SKIP_SUBKEYS = {"LocalServer32", "InProcServer32", "InProcHandler32"}
+MATCH_VALUES = {"MData", "Model", "scansk", "Therad"}
 
 
 def _pf86() -> str:
@@ -113,6 +125,130 @@ def wipe_folders(p: dict, log) -> None:
         if d.exists():
             shutil.rmtree(d, ignore_errors=True)
         log(f"deleted {d}: {not d.exists()}")
+
+
+def _delete_clsid_key(full_path: str, log) -> bool:
+    try:
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, full_path)
+        log(f"Deleted CLSID: {full_path}")
+        return True
+    except OSError:
+        try:
+            subprocess.run(
+                ["reg", "delete", rf"HKCU\{full_path}", "/f"],
+                capture_output=True, timeout=10,
+            )
+            log(f"Deleted CLSID (reg): {full_path}")
+            return True
+        except Exception:
+            log(f"Failed CLSID: {full_path}")
+            return False
+
+
+def wipe_clsid_keys(log) -> int:
+    r"""Scan HKCU\Software\Classes\Wow6432Node\CLSID for IDM trial keys.
+    Pattern from IAS: GUID subkeys matching digit-default / MData/Model/scansk/Therad /
+    empty key / digit-in-version. Deletes found keys. Returns count deleted.
+    """
+    deleted = 0
+    try:
+        clsid_key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, CLSID_ROOT)
+    except OSError:
+        log("CLSID root not found, skipping.")
+        return 0
+
+    try:
+        idx = 0
+        while True:
+            try:
+                guid_name = winreg.EnumKey(clsid_key, idx)
+            except OSError:
+                break  # enumeration exhausted
+            idx += 1
+
+            if not GUID_RE.match(guid_name):
+                continue
+
+            try:
+                guid_key = winreg.OpenKey(clsid_key, guid_name)
+            except OSError:
+                continue
+
+            delete = False
+            with guid_key:
+                # Check subkeys — skip if has LocalServer32/InProcServer32/InProcHandler32
+                try:
+                    sub_idx = 0
+                    has_skip = False
+                    sub_count = 0
+                    sub_list: list[str] = []
+                    while True:
+                        try:
+                            sn = winreg.EnumKey(guid_key, sub_idx)
+                            if sn in SKIP_SUBKEYS:
+                                has_skip = True
+                                break
+                            sub_list.append(sn)
+                            sub_count += 1
+                            sub_idx += 1
+                        except OSError:
+                            break
+                    if has_skip:
+                        continue
+                except Exception:
+                    pass
+
+                # IAS pattern: empty key (0 values, 0 subkeys)
+                try:
+                    value_count = winreg.QueryInfoKey(guid_key)[1]
+                except OSError:
+                    value_count = 0
+                if sub_count == 0 and value_count == 0:
+                    delete = True
+                else:
+                    # Read values
+                    values: dict[str, object] = {}
+                    vi = 0
+                    while True:
+                        try:
+                            vn, vd, vt = winreg.EnumValue(guid_key, vi)
+                            values[vn] = vd
+                            vi += 1
+                        except OSError:
+                            break
+
+                    default_val = values.get("", None)
+                    # IAS: default = digit only, no subkeys
+                    if isinstance(default_val, str) and default_val.isdigit() and sub_count == 0:
+                        delete = True
+                    # IAS: default contains + or =, no subkeys
+                    elif isinstance(default_val, str) and ("+" in default_val or "=" in default_val) and sub_count == 0:
+                        delete = True
+                    # Check MData/Model/scansk/Therad presence
+                    elif any(v in values for v in MATCH_VALUES):
+                        delete = True
+
+                    # IAS: version subkey default is digit, no other subkeys
+                    if not delete and sub_count == 1 and "Version" in sub_list:
+                        try:
+                            ver_key = winreg.OpenKey(guid_key, "Version")
+                            with ver_key:
+                                ver_def = winreg.QueryValueEx(ver_key, "")[0] if winreg.QueryInfoKey(ver_key)[1] > 0 else None
+                            if isinstance(ver_def, str) and ver_def.isdigit():
+                                delete = True
+                        except OSError:
+                            pass
+
+            if delete:
+                full = f"{CLSID_ROOT}\\{guid_name}"
+                if _delete_clsid_key(full, log):
+                    deleted += 1
+
+    finally:
+        winreg.CloseKey(clsid_key)
+
+    log(f"CLSID scan: deleted {deleted} keys.")
+    return deleted
 
 
 def _reg_gone() -> bool:
@@ -235,6 +371,7 @@ def run_reset(do_launch: bool, do_backup: bool, do_keep: bool, log=print) -> Non
         bk = backup(p, log)
 
     wipe_folders(p, log)
+    wipe_clsid_keys(log)
     wipe_registry(sid, log)
 
     if do_keep and bk:
